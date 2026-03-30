@@ -1,24 +1,25 @@
 import { apiInitializer } from "discourse/lib/api";
+import { ajax } from "discourse/lib/ajax";
 
 // Map to cache user API responses so we only fetch a user's profile once per session
 const avatarDecorationCache = new Map();
 
-async function getDecorationUrl(username, store, fieldId) {
+async function getDecorationUrl(username, fieldId) {
   if (avatarDecorationCache.has(username)) {
     return avatarDecorationCache.get(username);
   }
 
   try {
-    // Fetch user profile data
-    const user = await store.find("user", username);
+    // Fetch directly via AJAX to bypass Ember Data and prevent the "timezone" deprecation warning
+    const response = await ajax(`/u/${username}.json`);
     
-    // Discourse stores custom fields in the user_fields object keyed by their ID string
-    const url = user.user_fields?.[fieldId.toString()] ?? null;
+    // Extract the user field
+    const url = response?.user?.user_fields?.[fieldId.toString()] ?? null;
     
     avatarDecorationCache.set(username, url);
     return url;
   } catch (error) {
-    // If the fetch fails (e.g., user deleted), cache null to prevent infinite retries
+    // If the fetch fails (e.g., user deleted, or profile is strictly hidden), cache null
     avatarDecorationCache.set(username, null);
     return null;
   }
@@ -30,17 +31,20 @@ export default apiInitializer("1.8.0", (api) => {
 
   api.decorateCooked(
     async (cooked, helper) => {
-      // Ensure we are inside a post context
-      if (!helper?.getModel) return;
+      // FIX: Unwrap jQuery object if present to get the raw HTML element
+      const element = cooked.jquery ? cooked[0] : cooked;
+      
+      // Ensure element exists and we are inside a post context
+      if (!element || !helper?.getModel) return;
+      
       const post = helper.getModel();
       if (!post?.username) return;
 
-      const store = api.container.lookup("service:store");
-      const url = await getDecorationUrl(post.username, store, fieldId);
+      const url = await getDecorationUrl(post.username, fieldId);
       if (!url) return;
 
-      // Find the specific post container in the DOM
-      const topicPost = cooked.closest(".topic-post");
+      // Safely traverse the DOM using native element methods
+      const topicPost = element.closest ? element.closest(".topic-post") : null;
       if (!topicPost) return;
 
       const avatarWrapper = topicPost.querySelector(".post-avatar");
